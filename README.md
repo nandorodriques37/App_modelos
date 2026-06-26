@@ -3,11 +3,21 @@
 Painel de gestão de abastecimento (ruptura projetada, cobertura de estoque / PME,
 perda de vendas e gestão de SKUs por CD).
 
-Este repositório transforma o **protótipo de design** (Claude Design) em um
-projeto rodável: um servidor **Node.js + Express** que serve o painel e expõe a
-**API real** que o alimenta. Hoje a API responde com **dados simulados**
-determinísticos (porte fiel do gerador do protótipo); o próximo passo é plugar o
-banco de dados real mantendo o mesmo contrato.
+Este repositório é o **back-end** (Node.js + Express) que calcula e expõe a API
+do painel. O **front-end será construído no Lovable** e consome esta API; a
+**fonte de produção é o Databricks** (700k+ linhas), com todo o cálculo (PME,
+ruptura, perda, faixa, agregação) **empurrado como SQL para o warehouse** —
+escala sem trazer linha bruta para o Node.
+
+- **Mock (dev):** sem variáveis do Databricks, a API roda com dados simulados
+  determinísticos, com o mesmo contrato — útil para construir a UI no Lovable.
+- **Databricks (produção):** com as variáveis configuradas (ver `.env.example`),
+  a API calcula sobre a tabela real.
+
+> 📦 **Para o Lovable + Databricks:** comece por
+> [`docs/lovable_handoff/`](docs/lovable_handoff/) — arquitetura, contrato da
+> API, setup do Databricks, as fórmulas pendentes e um **prompt pronto** para
+> gerar a UI (`PROMPT_LOVABLE.md`).
 
 ## Como rodar
 
@@ -77,10 +87,18 @@ public/                       Front-end (protótipo de design servido como está
 src/
   server.js                   App Express (API + estáticos + health + CORS)
   routes/abastecimento.js     GET /api/abastecimento e /api/abastecimento/resumo
-  services/abastecimentoService.js  Carga + filtros (ponto de troca p/ o banco)
-  services/calculosService.js Cálculos (PME, ruptura, perda hoje, faixa, agregação, paginação)
-  utils/cache.js              Cache em memória com TTL (memoTTL) p/ a carga do dataset
+  services/resumoService.js   Despacho de fonte: Databricks (produção) x mock (dev)
+  services/abastecimentoService.js  Carga do mock + filtros + cache
+  services/calculosService.js Cálculos do mock (PME, ruptura, perda, faixa, agregação)
+  databricks/
+    cliente.js                Cliente REST do Databricks SQL (Statement Execution API)
+    contrato.js               SEAM de fórmulas: contrato -> SQL sobre as colunas brutas
+    consulta.js               Construtor do SQL de agregação (roda no Databricks)
+    fonte.js                  Orquestra as consultas e monta o resumo (mesmo contrato)
+  utils/cache.js              Cache em memória com TTL (memoTTL) p/ a carga do mock
   data/mockData.js            Gerador simulado (porte do buildData do protótipo)
+docs/
+  lovable_handoff/            ► Handoff p/ o Lovable + Databricks (comece aqui)
 test/                         Testes (node:test)
 docs/
   design_handoff_backend/     Handoff original de design (contrato + regras)
@@ -158,31 +176,29 @@ precisar abrir o detalhe por CD de um grupo.
 
 O caminho quente foi preparado para volume de produção sem mudar o contrato:
 
-- **Cache do dataset** (`src/utils/cache.js` · `memoTTL`): a "consulta" à fonte é
-  feita uma vez por janela (`DADOS_CACHE_TTL_MS`, padrão 60s) e reaproveitada
-  pelos requests seguintes. É o ponto exato onde o banco real entra
-  (`consultarFonte()`), e `invalidarCache()` força recarga após escritas.
-- **Derivados uma vez por carga**: `perdaHoje`/`catN3` são garantidos na carga,
-  então filtros/agregações não re-clonam linha a linha.
+- **Agregação no Databricks** (produção): filtros, derivação de PME/ruptura/
+  perda, somas, médias ponderadas, faixa, agrupamento e paginação rodam **no
+  SQL Warehouse** (`src/databricks/`). O Node só recebe a página de grupos + a
+  linha de totais — nunca as 700k linhas brutas.
+- **Cache do dataset do mock** (`src/utils/cache.js` · `memoTTL`): no modo dev,
+  a carga é feita uma vez por janela (`DADOS_CACHE_TTL_MS`, padrão 60s).
 - **Paginação dos grupos** e **payload enxuto** (detalhe opt-in) — resposta
   ~5× menor por padrão.
 - **gzip** (`compression`) em todas as respostas.
-- **Cache HTTP**: `Cache-Control: public, max-age=30` + `geradoEm` derivado do
-  momento da carga (não do request), o que torna o **ETag estável** e devolve
-  `304 Not Modified` em requisições idênticas.
+- **Cache HTTP**: `Cache-Control: public, max-age=30` (+ ETag → `304` no mock).
 
 ## Próximos passos (back-end)
 
-1. **Modelar** a tabela/consulta que produz a "linha" (produto × CD) com os
-   campos do contrato.
-2. **Substituir** `consultarFonte()` em `src/services/abastecimentoService.js`
-   por uma consulta ao banco — o cache, os filtros e os cálculos não mudam.
-3. ✅ **Cálculo no servidor** disponível em `GET /api/abastecimento/resumo`
-   (`src/services/calculosService.js`): PME, ruptura, perda hoje, faixa,
-   agrupamento, paginação e totais — com cache, gzip e cache HTTP (ver
-   "Escala & performance"). Para volumes muito grandes, o próximo passo é
-   empurrar filtros/agregação/paginação para a própria consulta SQL.
+1. ✅ **Cálculo no servidor** em `GET /api/abastecimento/resumo`: PME, ruptura,
+   perda hoje, faixa, agrupamento, paginação e totais. Em produção é empurrado
+   como SQL para o Databricks (`src/databricks/`); no dev usa o mock.
+2. **Plugar o Databricks**: configure as variáveis (`.env.example`) e ajuste o
+   **seam de fórmulas** `src/databricks/contrato.js` aos nomes de coluna reais e
+   às fórmulas de PME/ruptura/custo (dados brutos — ver handoff §4).
+3. **Construir a UI no Lovable** com o `docs/lovable_handoff/PROMPT_LOVABLE.md`,
+   apontando `VITE_API_URL` para o back-end publicado.
 4. **Autenticação** e recorte de escopo por usuário (analista/comprador/CD).
 
-O gerador simulado (`src/data/mockData.js`) pode ser removido quando o banco
-estiver ligado.
+O gerador simulado (`src/data/mockData.js`) e a camada de cálculo em JS
+(`calculosService.js`) seguem como **fonte de referência das fórmulas** e
+fallback de dev; podem ser removidos quando o Databricks for a única fonte.

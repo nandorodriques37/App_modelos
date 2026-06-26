@@ -1,8 +1,8 @@
 'use strict';
 
 const express = require('express');
-const { listarLinhas, geradoEm } = require('../services/abastecimentoService');
-const { resumir } = require('../services/calculosService');
+const { geradoEm } = require('../services/abastecimentoService');
+const { obterResumo, obterLinhas, usandoDatabricks } = require('../services/resumoService');
 
 const router = express.Router();
 
@@ -10,24 +10,33 @@ const router = express.Router();
 // request) permite que o ETag do Express devolva 304 em requisições idênticas.
 const CACHE_HTTP = 'public, max-age=30';
 
+// `geradoEm` só faz sentido para a carga em cache do mock; com Databricks (dados
+// ao vivo) usamos o instante da resposta.
+function geradoEmAtual() {
+  return usandoDatabricks() ? new Date().toISOString() : geradoEm();
+}
+
 /**
  * GET /api/abastecimento
  *
  * Devolve { linhas: [...] } no formato do contrato (uma linha por produto × CD).
- * É o "ponto único de integração" consumido pelo front-end
- * (window.ABASTECIMENTO_API_URL / buildFromRows).
+ *
+ * Com Databricks configurado a consulta é SEMPRE paginada (nunca devolve as
+ * 700k linhas); use `?pagina` e `?tamanhoPagina`. No mock devolve o conjunto
+ * filtrado (pequeno).
  *
  * Filtros opcionais via query (todos combináveis; ausentes = sem filtro):
  *   ?produto=, ?situacao=, ?catN2=, ?cat3= (ou ?catN3=), ?catN4=,
  *   ?com=, ?log=, ?analista=, ?comprador=  -> multi-valor: "A,B"
  *   ?cd=3                                   -> CD único
  *   ?search= / ?q=                          -> busca em produto + codsemDv
+ *   ?pmeBase=, ?pagina=, ?tamanhoPagina=, ?sortKey=, ?sortDir=
  */
-router.get('/abastecimento', (req, res, next) => {
+router.get('/abastecimento', async (req, res, next) => {
   try {
-    const linhas = listarLinhas(req.query);
+    const linhas = await obterLinhas(req.query);
     res.set('Cache-Control', CACHE_HTTP);
-    res.json({ linhas, total: linhas.length, geradoEm: geradoEm() });
+    res.json({ linhas, total: linhas.length, fonte: usandoDatabricks() ? 'databricks' : 'mock', geradoEm: geradoEmAtual() });
   } catch (err) {
     next(err);
   }
@@ -36,10 +45,11 @@ router.get('/abastecimento', (req, res, next) => {
 /**
  * GET /api/abastecimento/resumo
  *
- * Devolve os dados já CALCULADOS no servidor (estratégia "Escalável" do handoff),
- * reproduzindo as fórmulas do front-end: PME (média ponderada + base de demanda),
- * ruptura projetada (soma), perda hoje (derivada + soma), faixa de cobertura,
- * agrupamento dinâmico e linha de totais.
+ * Endpoint principal do painel (consumido pelo Lovable). Devolve os dados já
+ * CALCULADOS no back-end: PME (média ponderada + base de demanda), ruptura
+ * projetada (soma), perda hoje (derivada + soma), faixa de cobertura,
+ * agrupamento dinâmico, paginação e linha de totais. Com Databricks, todo o
+ * cálculo é empurrado como SQL para o warehouse.
  *
  * Aceita os mesmos filtros de /abastecimento, mais:
  *   ?pmeBase=media3m|kardex30   -> base de demanda do PME (padrão: media3m)
@@ -52,23 +62,13 @@ router.get('/abastecimento', (req, res, next) => {
  *
  * Resposta: { pmeBase, groupBy, grupos:[{key, cd?, meta, agg, qtdLinhas, linhas?}],
  *             totais, faixas:{rup,faixa,exc}, total, totalGrupos, pagina,
- *             tamanhoPagina, totalPaginas, geradoEm }
+ *             tamanhoPagina, totalPaginas, fonte, geradoEm }
  */
-router.get('/abastecimento/resumo', (req, res, next) => {
+router.get('/abastecimento/resumo', async (req, res, next) => {
   try {
-    const linhas = listarLinhas(req.query);
-    const resumo = resumir(linhas, {
-      pmeBase: req.query.pmeBase,
-      groupBy: req.query.groupBy,
-      sortKey: req.query.sortKey,
-      sortDir: req.query.sortDir,
-      pagina: req.query.pagina,
-      tamanhoPagina: req.query.tamanhoPagina,
-      todos: req.query.todos === 'true' || req.query.todos === '1',
-      incluirLinhas: req.query.detalhe === 'true' || req.query.incluirLinhas === 'true'
-    });
+    const resumo = await obterResumo(req.query);
     res.set('Cache-Control', CACHE_HTTP);
-    res.json({ ...resumo, geradoEm: geradoEm() });
+    res.json({ ...resumo, fonte: usandoDatabricks() ? 'databricks' : 'mock', geradoEm: geradoEmAtual() });
   } catch (err) {
     next(err);
   }
