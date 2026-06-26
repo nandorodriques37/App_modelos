@@ -8,5 +8,6 @@ yarn-error.log*
 coverage/
 dist/
 
-# Artefatos de empacotamento (ZIP de entrega gerado por git archive)
+# Artefatos de empacotamento (ZIP/PDF de entrega gerados a partir das docs)
 *.zip
+*.pdf
