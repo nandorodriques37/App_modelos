@@ -7,3 +7,7 @@ yarn-error.log*
 .DS_Store
 coverage/
 dist/
+
+# Artefatos de empacotamento (ZIP/PDF de entrega gerados a partir das docs)
+*.zip
+*.pdf
