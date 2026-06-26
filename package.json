@@ -1,0 +1,19 @@
+{
+  "name": "gestao-abastecimento",
+  "version": "0.1.0",
+  "description": "Painel de Gestão de Abastecimento — back-end (API) + protótipo de front-end.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
