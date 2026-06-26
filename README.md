@@ -76,8 +76,9 @@ public/                       Front-end (protótipo de design servido como está
   vendor/                     React 18 UMD local (dispensa CDN externo)
 src/
   server.js                   App Express (API + estáticos + health + CORS)
-  routes/abastecimento.js     GET /api/abastecimento
+  routes/abastecimento.js     GET /api/abastecimento e /api/abastecimento/resumo
   services/abastecimentoService.js  Carga + filtros (ponto de troca p/ o banco)
+  services/calculosService.js Cálculos (PME, ruptura, perda hoje, faixa, agregação)
   data/mockData.js            Gerador simulado (porte do buildData do protótipo)
 test/                         Testes (node:test)
 docs/
@@ -110,15 +111,50 @@ Todos via query string; ausentes = sem filtro (devolve tudo).
 | `cd` | `?cd=3` | CD único |
 | `search` / `q` | `?q=mounjaro` | busca em `produto` + `codsemDv` |
 
+### Endpoint calculado — `GET /api/abastecimento/resumo`
+
+Para os casos em que se prefere o cálculo **no servidor** (estratégia
+"Escalável" do handoff), este endpoint devolve os dados **já agregados**, com as
+mesmas fórmulas do front-end portadas para `src/services/calculosService.js`:
+
+- **PME (dias)** — média ponderada por `qtdMedia3m`, com base de demanda
+  selecionável (`pmeBase=media3m|kardex30`) e a **faixa de cobertura**
+  (`rup` < 20d · `faixa` 20–40d · `exc` > 40d).
+- **Ruptura projetada (R$)** — agregada por soma.
+- **Perda hoje (R$)** — derivada (`stkCd === 0 ? round((qtdMedia3m/30) × custo) : 0`)
+  e agregada por soma.
+
+Aceita **todos os filtros acima**, mais:
+
+| Parâmetro | Exemplo | Descrição |
+|-----------|---------|-----------|
+| `pmeBase` | `?pmeBase=kardex30` | base de demanda do PME (padrão `media3m`) |
+| `groupBy` | `?groupBy=cd` | agrupamento: `produto` (padrão), `cd` ou `total` |
+| `sortKey` | `?sortKey=perdaHoje` | medida (ou `produto`/`codsemDv`/`cds`) de ordenação (padrão `ruptura`) |
+| `sortDir` | `?sortDir=asc` | direção (padrão `desc`) |
+
+Resposta:
+
+```json
+{ "pmeBase": "media3m", "groupBy": "produto",
+  "grupos": [ { "key": "79444", "meta": { "...": "..." },
+               "agg": { "ruptura": 94397, "perdaHoje": 15472, "pmeGeral": 15.2, "faixa": "rup", "...": "..." },
+               "linhas": [ { "...": "..." } ] } ],
+  "totais": { "ruptura": 814265, "perdaHoje": 37948, "pmeGeral": 30, "faixa": "faixa", "...": "..." },
+  "faixas": { "rup": 29, "faixa": 65, "exc": 18 },
+  "total": 112, "geradoEm": "2026-06-25T..." }
+```
+
 ## Próximos passos (back-end)
 
 1. **Modelar** a tabela/consulta que produz a "linha" (produto × CD) com os
    campos do contrato.
 2. **Substituir** `carregarLinhas()` em `src/services/abastecimentoService.js`
    por uma consulta ao banco — o resto da aplicação não muda.
-3. **Decidir cliente × servidor**: para volumes grandes, mover agregação e
-   paginação para o servidor (replicando as fórmulas de PME, faixa, perda e
-   agregação descritas no handoff).
+3. ✅ **Cálculo no servidor** disponível em `GET /api/abastecimento/resumo`
+   (`src/services/calculosService.js`): PME, ruptura, perda hoje, faixa,
+   agrupamento e totais. Para volumes muito grandes, o próximo passo é empurrar
+   essas agregações para a própria consulta SQL.
 4. **Autenticação** e recorte de escopo por usuário (analista/comprador/CD).
 
 O gerador simulado (`src/data/mockData.js`) pode ser removido quando o banco
