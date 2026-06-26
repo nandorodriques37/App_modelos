@@ -37,9 +37,39 @@ npm test
 Cobrem o contrato de dados, o determinismo do gerador, a regra de `perdaHoje` e
 os filtros do serviço.
 
+## Deploy na Vercel
+
+O projeto já está pronto para a Vercel — toda a configuração está em
+`vercel.json`, sem necessidade de ajustes no painel.
+
+- O app Express é exposto como Serverless Function em `api/index.js`
+  (atende `/api/*` e `/health`).
+- Os estáticos do painel (`public/`: `index.html`, `support.js`, `vendor/`)
+  são servidos diretamente pela CDN da Vercel.
+
+Como publicar:
+
+1. **Via dashboard:** importe o repositório em vercel.com → "Add New… → Project".
+   Não é preciso definir Build Command nem Output Directory; o `vercel.json`
+   cuida do roteamento. Clique em Deploy.
+2. **Via CLI:**
+   ```bash
+   npm i -g vercel
+   vercel          # preview
+   vercel --prod   # produção
+   ```
+
+Como o painel chama a API na mesma origem (`/api/abastecimento`), não há nada a
+configurar: assim que o deploy sobe, o painel já consome a API publicada. Para
+apontar o painel para outra API, defina `window.ABASTECIMENTO_API_URL` em
+`public/index.html`.
+
 ## Estrutura
 
 ```
+api/
+  index.js                    Entrypoint da Serverless Function (Vercel) -> app Express
+vercel.json                   Roteamento da Vercel (functions + estáticos)
 public/                       Front-end (protótipo de design servido como estático)
   index.html                  Painel; configura ABASTECIMENTO_API_URL -> /api/abastecimento
   support.js                  Runtime do protótipo (não editar)
