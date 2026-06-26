@@ -78,7 +78,8 @@ src/
   server.js                   App Express (API + estáticos + health + CORS)
   routes/abastecimento.js     GET /api/abastecimento e /api/abastecimento/resumo
   services/abastecimentoService.js  Carga + filtros (ponto de troca p/ o banco)
-  services/calculosService.js Cálculos (PME, ruptura, perda hoje, faixa, agregação)
+  services/calculosService.js Cálculos (PME, ruptura, perda hoje, faixa, agregação, paginação)
+  utils/cache.js              Cache em memória com TTL (memoTTL) p/ a carga do dataset
   data/mockData.js            Gerador simulado (porte do buildData do protótipo)
 test/                         Testes (node:test)
 docs/
@@ -132,29 +133,55 @@ Aceita **todos os filtros acima**, mais:
 | `groupBy` | `?groupBy=cd` | agrupamento: `produto` (padrão), `cd` ou `total` |
 | `sortKey` | `?sortKey=perdaHoje` | medida (ou `produto`/`codsemDv`/`cds`) de ordenação (padrão `ruptura`) |
 | `sortDir` | `?sortDir=asc` | direção (padrão `desc`) |
+| `pagina` | `?pagina=2` | página dos grupos, 1-based (padrão `1`) |
+| `tamanhoPagina` | `?tamanhoPagina=50` | grupos por página; `0` ou `?todos=true` = sem paginação (padrão `50`) |
+| `detalhe` | `?detalhe=true` | inclui as linhas (produto × CD) de cada grupo (padrão `false`) |
 
-Resposta:
+Resposta (por padrão **sem** as linhas de detalhe — só a contagem `qtdLinhas`):
 
 ```json
 { "pmeBase": "media3m", "groupBy": "produto",
   "grupos": [ { "key": "79444", "meta": { "...": "..." },
                "agg": { "ruptura": 94397, "perdaHoje": 15472, "pmeGeral": 15.2, "faixa": "rup", "...": "..." },
-               "linhas": [ { "...": "..." } ] } ],
+               "qtdLinhas": 6 } ],
   "totais": { "ruptura": 814265, "perdaHoje": 37948, "pmeGeral": 30, "faixa": "faixa", "...": "..." },
   "faixas": { "rup": 29, "faixa": 65, "exc": 18 },
-  "total": 112, "geradoEm": "2026-06-25T..." }
+  "total": 112, "totalGrupos": 18, "pagina": 1, "tamanhoPagina": 50, "totalPaginas": 1,
+  "geradoEm": "2026-06-25T..." }
 ```
+
+`totais` e `faixas` são sempre calculados sobre o **conjunto filtrado inteiro**,
+não sobre a página. Use `?detalhe=true` (ou filtre por um `codsemDv`) quando
+precisar abrir o detalhe por CD de um grupo.
+
+### Escala & performance
+
+O caminho quente foi preparado para volume de produção sem mudar o contrato:
+
+- **Cache do dataset** (`src/utils/cache.js` · `memoTTL`): a "consulta" à fonte é
+  feita uma vez por janela (`DADOS_CACHE_TTL_MS`, padrão 60s) e reaproveitada
+  pelos requests seguintes. É o ponto exato onde o banco real entra
+  (`consultarFonte()`), e `invalidarCache()` força recarga após escritas.
+- **Derivados uma vez por carga**: `perdaHoje`/`catN3` são garantidos na carga,
+  então filtros/agregações não re-clonam linha a linha.
+- **Paginação dos grupos** e **payload enxuto** (detalhe opt-in) — resposta
+  ~5× menor por padrão.
+- **gzip** (`compression`) em todas as respostas.
+- **Cache HTTP**: `Cache-Control: public, max-age=30` + `geradoEm` derivado do
+  momento da carga (não do request), o que torna o **ETag estável** e devolve
+  `304 Not Modified` em requisições idênticas.
 
 ## Próximos passos (back-end)
 
 1. **Modelar** a tabela/consulta que produz a "linha" (produto × CD) com os
    campos do contrato.
-2. **Substituir** `carregarLinhas()` em `src/services/abastecimentoService.js`
-   por uma consulta ao banco — o resto da aplicação não muda.
+2. **Substituir** `consultarFonte()` em `src/services/abastecimentoService.js`
+   por uma consulta ao banco — o cache, os filtros e os cálculos não mudam.
 3. ✅ **Cálculo no servidor** disponível em `GET /api/abastecimento/resumo`
    (`src/services/calculosService.js`): PME, ruptura, perda hoje, faixa,
-   agrupamento e totais. Para volumes muito grandes, o próximo passo é empurrar
-   essas agregações para a própria consulta SQL.
+   agrupamento, paginação e totais — com cache, gzip e cache HTTP (ver
+   "Escala & performance"). Para volumes muito grandes, o próximo passo é
+   empurrar filtros/agregação/paginação para a própria consulta SQL.
 4. **Autenticação** e recorte de escopo por usuário (analista/comprador/CD).
 
 O gerador simulado (`src/data/mockData.js`) pode ser removido quando o banco

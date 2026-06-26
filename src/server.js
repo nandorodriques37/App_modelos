@@ -2,12 +2,16 @@
 
 const path = require('path');
 const express = require('express');
+const compression = require('compression');
 
 const abastecimentoRouter = require('./routes/abastecimento');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Compressão gzip das respostas (JSON da API + estáticos). Grande ganho de
+// banda/latência para os payloads do painel.
+app.use(compression());
 app.use(express.json());
 
 // CORS simples — permite que o painel rode em outra origem durante o dev.

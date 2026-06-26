@@ -129,3 +129,43 @@ test('resumir normaliza opções inválidas para os padrões', () => {
   assert.strictEqual(resumo.pmeBase, 'media3m');
   assert.strictEqual(resumo.groupBy, 'produto');
 });
+
+test('resumir pagina os grupos sem afetar totais/faixas (sobre o conjunto inteiro)', () => {
+  const linhas = gerarLinhas();
+  const inteiro = resumir(linhas, { groupBy: 'produto', todos: true });
+  const pag = resumir(linhas, { groupBy: 'produto', pagina: 1, tamanhoPagina: 5 });
+
+  assert.strictEqual(pag.totalGrupos, inteiro.totalGrupos);
+  assert.strictEqual(pag.grupos.length, 5, 'a página traz no máximo tamanhoPagina grupos');
+  assert.strictEqual(pag.totalPaginas, Math.ceil(inteiro.totalGrupos / 5));
+  // totais e faixas independem da paginação
+  assert.deepStrictEqual(pag.totais, inteiro.totais);
+  assert.deepStrictEqual(pag.faixas, inteiro.faixas);
+});
+
+test('resumir página 2 continua de onde a 1 parou (sem sobreposição)', () => {
+  const linhas = gerarLinhas();
+  const p1 = resumir(linhas, { groupBy: 'produto', pagina: 1, tamanhoPagina: 5 });
+  const p2 = resumir(linhas, { groupBy: 'produto', pagina: 2, tamanhoPagina: 5 });
+  const chaves1 = new Set(p1.grupos.map((g) => g.key));
+  assert.ok(p2.grupos.every((g) => !chaves1.has(g.key)), 'páginas não se sobrepõem');
+});
+
+test('resumir omite linhas de detalhe por padrão e as inclui com incluirLinhas', () => {
+  const linhas = gerarLinhas();
+  const semDetalhe = resumir(linhas, { groupBy: 'produto', todos: true });
+  assert.ok(semDetalhe.grupos.every((g) => g.linhas === undefined));
+  assert.ok(semDetalhe.grupos.every((g) => typeof g.qtdLinhas === 'number'));
+
+  const comDetalhe = resumir(linhas, { groupBy: 'produto', todos: true, incluirLinhas: true });
+  assert.ok(comDetalhe.grupos.every((g) => Array.isArray(g.linhas)));
+  assert.ok(comDetalhe.grupos.every((g) => g.linhas.length === g.qtdLinhas));
+});
+
+test('resumir com tamanhoPagina=0 devolve todos os grupos', () => {
+  const linhas = gerarLinhas();
+  const r = resumir(linhas, { groupBy: 'produto', tamanhoPagina: 0 });
+  const codigosUnicos = new Set(linhas.map((x) => x.codsemDv));
+  assert.strictEqual(r.grupos.length, codigosUnicos.size);
+  assert.strictEqual(r.totalPaginas, 1);
+});

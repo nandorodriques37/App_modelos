@@ -79,6 +79,9 @@ function perdaHojeDe(r) {
  */
 function garantirDerivados(linhas) {
   return linhas.map((r) => {
+    // Linha já completa: reaproveita a referência (evita clone — ganho de
+    // performance quando o dataset já vem com os derivados prontos do cache).
+    if (r.catN3 != null && r.cat3 != null && r.perdaHoje != null) return r;
     const o = { ...r };
     if (o.catN3 == null) o.catN3 = o.cat3;
     if (o.cat3 == null) o.cat3 = o.catN3;
@@ -219,13 +222,50 @@ function agrupar(linhas, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Paginação e formatação de saída (payload enxuto p/ escala)
+// ---------------------------------------------------------------------------
+
+// Tamanho de página padrão dos grupos no resumo.
+const TAMANHO_PAGINA_PADRAO = 50;
+
+/**
+ * Resolve a janela de paginação dos grupos.
+ *   tamanhoPagina ausente/ inválido → TAMANHO_PAGINA_PADRAO
+ *   tamanhoPagina = 0 (ou opts.todos) → sem paginação (devolve todos os grupos)
+ */
+function resolverPaginacao(opts, totalGrupos) {
+  const semLimite = opts.todos === true || Number(opts.tamanhoPagina) === 0;
+  if (semLimite) return { pagina: 1, tamanhoPagina: 0, inicio: 0, fim: totalGrupos };
+
+  const n = Number(opts.tamanhoPagina);
+  const tamanhoPagina = Number.isFinite(n) && n > 0 ? Math.floor(n) : TAMANHO_PAGINA_PADRAO;
+  const pagina = Math.max(1, Math.floor(Number(opts.pagina) || 1));
+  const inicio = (pagina - 1) * tamanhoPagina;
+  return { pagina, tamanhoPagina, inicio, fim: inicio + tamanhoPagina };
+}
+
+/**
+ * Serializa um grupo para a resposta. As linhas de detalhe (produto × CD) só
+ * vão no payload quando `incluirLinhas` é true — por padrão envia apenas a
+ * contagem (`qtdLinhas`), reduzindo muito o tamanho da resposta em escala.
+ */
+function formatarGrupo(g, incluirLinhas) {
+  const out = { key: g.key, meta: g.meta, agg: g.agg, qtdLinhas: g.linhas.length };
+  if (g.cd != null) out.cd = g.cd;
+  if (incluirLinhas) out.linhas = g.linhas;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Ponto de entrada de alto nível
 // ---------------------------------------------------------------------------
 
 /**
- * Calcula o resumo completo do painel a partir das linhas cruas (produto × CD):
+ * Calcula o resumo do painel a partir das linhas cruas (produto × CD):
  * garante derivados (perdaHoje), aplica a base de demanda ao PME, agrupa,
- * agrega cada grupo e produz a linha de totais + a distribuição por faixa.
+ * agrega cada grupo, pagina os grupos e produz totais + distribuição por faixa.
+ *
+ * Totais e faixas são sempre sobre o conjunto FILTRADO INTEIRO (não a página).
  *
  * @param {Array<Object>} linhas linhas no formato do contrato
  * @param {Object} [opts]
@@ -233,14 +273,23 @@ function agrupar(linhas, opts = {}) {
  * @param {('produto'|'cd'|'total')} [opts.groupBy='produto']
  * @param {string} [opts.sortKey]
  * @param {('asc'|'desc')} [opts.sortDir]
- * @returns {{pmeBase:string, groupBy:string, grupos:Array, totais:Object, faixas:Object, total:number}}
+ * @param {number} [opts.pagina=1] página (1-based)
+ * @param {number} [opts.tamanhoPagina=50] grupos por página (0 = sem paginação)
+ * @param {boolean} [opts.todos=false] atalho para tamanhoPagina=0
+ * @param {boolean} [opts.incluirLinhas=false] inclui as linhas de detalhe em cada grupo
+ * @returns {{pmeBase, groupBy, grupos, totais, faixas, total, totalGrupos, pagina, tamanhoPagina, totalPaginas}}
  */
 function resumir(linhas, opts = {}) {
   const pmeBase = BASES_PME.includes(opts.pmeBase) ? opts.pmeBase : 'media3m';
   const groupBy = MODOS_AGRUPAMENTO.includes(opts.groupBy) ? opts.groupBy : 'produto';
+  const incluirLinhas = opts.incluirLinhas === true;
 
   const base = ajustarPme(garantirDerivados(linhas), pmeBase);
-  const grupos = agrupar(base, { groupBy, sortKey: opts.sortKey, sortDir: opts.sortDir });
+  const todosGrupos = agrupar(base, { groupBy, sortKey: opts.sortKey, sortDir: opts.sortDir });
+
+  const totalGrupos = todosGrupos.length;
+  const { pagina, tamanhoPagina, inicio, fim } = resolverPaginacao(opts, totalGrupos);
+  const grupos = todosGrupos.slice(inicio, fim).map((g) => formatarGrupo(g, incluirLinhas));
 
   return {
     pmeBase,
@@ -248,7 +297,11 @@ function resumir(linhas, opts = {}) {
     grupos,
     totais: agregar(base),
     faixas: distribuicaoFaixa(base),
-    total: base.length
+    total: base.length,
+    totalGrupos,
+    pagina,
+    tamanhoPagina,
+    totalPaginas: tamanhoPagina ? Math.ceil(totalGrupos / tamanhoPagina) || 1 : 1
   };
 }
 
